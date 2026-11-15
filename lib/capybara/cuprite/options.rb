@@ -5,7 +5,7 @@ module Ferrum
     class Options
       attr_writer :window_size
       attr_accessor :url_blacklist, :url_whitelist, :raise_on_unhandled_modal, :raise_on_js_errors,
-                    :raise_on_pending_connections
+                    :raise_on_pending_connections, :reset_mode
 
       def mobile
         @options.fetch(:mobile, nil)
