@@ -508,6 +508,22 @@ describe Capybara::Cuprite::Driver do
         expect(@session).to have_content("Foo")
       end
 
+      it "clears storage of an origin whose window closed before the reset" do
+        other_origin = "http://localhost:#{@session.server.port}/cuprite/simple"
+        @session.visit("/cuprite/simple")
+        popup = @session.open_new_window
+        @session.within_window(popup) do
+          @session.visit(other_origin)
+          @session.execute_script("localStorage.setItem('key', 'left behind')")
+        end
+        popup.close
+
+        @session.reset!
+        @session.visit(other_origin)
+
+        expect(@session.evaluate_script("localStorage.getItem('key')")).to be_nil
+      end
+
       it "drops extra headers and offline mode" do
         @driver.browser.headers.set("X-Soft-Reset" => "kept")
         @session.visit("/cuprite/headers")

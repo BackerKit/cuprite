@@ -24,6 +24,7 @@ module Capybara
 
         @page = nil
         @reset_target_id = nil
+        @closed_window_origins = []
       end
 
       def command(...)
@@ -84,6 +85,7 @@ module Capybara
           forget_page
           @page_closed = true
         end
+        @closed_window_origins |= target_origins(target)
         target.page.close
         targets.delete(target_id) # page.close is async, delete target asap
       end
@@ -97,6 +99,7 @@ module Capybara
 
       def hard_reset
         @reset_target_id = nil
+        @closed_window_origins = []
         contexts.reset
       end
 
@@ -109,6 +112,7 @@ module Capybara
         command("Storage.clearCookies", browserContextId: context.id)
         page = attach_page(target.id)
         origins.each { |o| page.command("Storage.clearDataForOrigin", origin: o, storageTypes: STORAGE_TYPES) }
+        @closed_window_origins = []
         @reset_target_id = target.id
       rescue Ferrum::Error
         hard_reset
@@ -116,9 +120,13 @@ module Capybara
 
       def visited_origins(context)
         pages = context.targets.values.select(&:page?)
-        urls = pages.map(&:url)
-        urls += pages.select(&:connected?).flat_map { |t| t.page.network.traffic.map(&:url) }
-        urls.filter_map { |url| origin(url) }.uniq
+        (pages.flat_map { |target| target_origins(target) } + @closed_window_origins).uniq
+      end
+
+      def target_origins(target)
+        urls = [target.url]
+        urls += target.page.network.traffic.map(&:url) if target.connected?
+        urls.filter_map { |url| origin(url) }
       end
 
       def origin(url)
