@@ -440,6 +440,61 @@ describe Capybara::Cuprite::Driver do
         JS
       end
 
+      it "drops cookies set by a request still in flight when the reset starts" do
+        leaked = 10.times.count do
+          @session.visit("/cuprite/simple")
+          @session.execute_script("fetch('/cuprite/slow_cookie')")
+          sleep 0.005 until @driver.browser.network.traffic.any? { |e| e.url.include?("slow_cookie") }
+
+          @session.reset!
+          @session.visit("/cuprite/simple")
+          sleep 0.2
+          @driver.browser.cookies["late"]
+        end
+
+        expect(leaked).to eq(0)
+      end
+
+      it "stops scripts the previous page left running" do
+        @session.visit("/cuprite/simple")
+        @session.execute_script("setInterval(() => { document.cookie = 'late=arrival; path=/' }, 0)")
+
+        @session.reset!
+        @session.visit("/cuprite/simple")
+        sleep 0.1
+
+        expect(@driver.browser.cookies["late"]).to be_nil
+      end
+
+      it "forgets a modal the previous test never asserted on" do
+        @session.visit("/cuprite/simple")
+        @driver.browser.page.accept_confirm
+        @session.execute_script("setTimeout(() => confirm('left behind'), 0)")
+        sleep 0.2
+
+        @session.reset!
+        @session.visit("/cuprite/simple")
+
+        expect { @session.accept_confirm("left behind", wait: 0.5) { nil } }.to raise_error(Capybara::ModalNotFound)
+      end
+
+      it "restores the window size and drops device and media emulation" do
+        @session.visit("/cuprite/simple")
+        dark = @session.evaluate_script("matchMedia('(prefers-color-scheme: dark)').matches")
+        @session.current_window.resize_to(402, 874)
+        @driver.browser.page.command("Emulation.setDeviceMetricsOverride",
+                                     width: 375, height: 600, deviceScaleFactor: 2, mobile: true)
+        @driver.browser.page.command("Emulation.setEmulatedMedia",
+                                     features: [{ name: "prefers-color-scheme", value: dark ? "light" : "dark" }])
+
+        @session.reset!
+        @session.visit("/cuprite/simple")
+
+        expect(@session.evaluate_script("window.innerWidth")).to eq(@driver.browser.options.window_size[0])
+        expect(@session.evaluate_script("window.devicePixelRatio")).to eq(1)
+        expect(@session.evaluate_script("matchMedia('(prefers-color-scheme: dark)').matches")).to eq(dark)
+      end
+
       it "closes extra windows" do
         @session.visit("/cuprite/simple")
         @session.switch_to_window(@session.open_new_window)
