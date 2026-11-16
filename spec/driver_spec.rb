@@ -508,6 +508,27 @@ describe Capybara::Cuprite::Driver do
         expect(@session).to have_content("Foo")
       end
 
+      it "clears cookies only after the old windows are gone" do
+        open_at_clear = []
+        old_ids = []
+        allow(@driver.browser).to receive(:command).and_wrap_original do |original, method, **params|
+          if method == "Storage.clearCookies"
+            ids = original.call("Target.getTargets")["targetInfos"].map { |info| info["targetId"] }
+            open_at_clear.concat(ids & old_ids)
+          end
+          original.call(method, **params)
+        end
+
+        10.times do
+          @session.visit("/cuprite/simple")
+          @session.execute_script("setInterval(() => { document.cookie = 'late=arrival; path=/' }, 0)")
+          old_ids = @driver.browser.window_handles
+          @session.reset!
+        end
+
+        expect(open_at_clear).to eq([])
+      end
+
       it "clears storage of an origin whose window closed before the reset" do
         other_origin = "http://localhost:#{@session.server.port}/cuprite/simple"
         @session.visit("/cuprite/simple")

@@ -144,13 +144,28 @@ module Capybara
       end
 
       def close_pages(context, except:)
-        context.targets.values.select(&:page?).each do |target|
+        closed_ids = context.targets.values.select(&:page?).filter_map do |target|
           next if target.id == except.id
 
           target.close_connection
           command("Target.closeTarget", targetId: target.id)
           context.delete_target(target.id)
+          target.id
         end
+        wait_until_targets_gone(closed_ids)
+      end
+
+      def wait_until_targets_gone(ids)
+        deadline = ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) + timeout
+        while open_target_ids.intersect?(ids)
+          raise Ferrum::TimeoutError if ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) > deadline
+
+          sleep 0.005
+        end
+      end
+
+      def open_target_ids
+        command("Target.getTargets")["targetInfos"].map { |info| info["targetId"] }
       end
 
       def prepare_reset_mode(mode)
