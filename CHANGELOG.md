@@ -1,6 +1,8 @@
 ## [Unreleased](https://github.com/rubycdp/cuprite/compare/v0.20.1...main) ##
 
 ### Added
+- `reset: :soft` driver option keeps the browser context and its HTTP cache between tests, clearing cookies, storage
+  and extra windows instead, so assets aren't downloaded again for every test [#128]
 - `:url_blocklist` and `:url_allowlist` driver options as aliases for `:url_blacklist` and `:url_whitelist` [#330]
 
 ### Changed

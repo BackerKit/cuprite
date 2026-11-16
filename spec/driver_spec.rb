@@ -385,6 +385,191 @@ describe Capybara::Cuprite::Driver do
       JS
       expect(value).to be_nil
     end
+
+    context "with reset: :soft" do
+      around do |example|
+        @session = TestSessions::CupriteSoftReset
+        @driver = @session.driver
+        example.run
+      ensure
+        @session.reset!
+      end
+
+      it "keeps the HTTP cache" do
+        @session.visit("/cuprite/cacheable")
+        expect(@driver.browser.network.traffic.last.response.params.dig("response", "fromDiskCache")).to be_falsey
+
+        @session.reset!
+        @session.visit("/cuprite/cacheable")
+
+        expect(@driver.browser.network.traffic.last.response.params.dig("response", "fromDiskCache")).to be_truthy
+      end
+
+      it "clears cookies" do
+        @session.visit("/set_cookie")
+        expect(@driver.browser.cookies["capybara"]).not_to be_nil
+
+        @session.reset!
+        @session.visit("/get_cookie")
+
+        expect(@driver.browser.cookies.all).to be_empty
+        expect(@session.html).not_to include("test_cookie")
+      end
+
+      it "clears local storage, session storage and IndexedDB" do
+        @session.visit("/cuprite/simple")
+        @session.execute_script(<<~JS)
+          localStorage.setItem("key", "local");
+          sessionStorage.setItem("key", "session");
+        JS
+        @session.evaluate_async_script(<<~JS)
+          const request = indexedDB.open("cuprite_soft_reset");
+          request.onsuccess = () => { request.result.close(); arguments[0](); };
+        JS
+        expect(@session.evaluate_async_script(<<~JS)).to include("cuprite_soft_reset")
+          indexedDB.databases().then((dbs) => arguments[0](dbs.map((db) => db.name)));
+        JS
+
+        @session.reset!
+        @session.visit("/cuprite/simple")
+
+        expect(@session.evaluate_script("localStorage.getItem('key')")).to be_nil
+        expect(@session.evaluate_script("sessionStorage.getItem('key')")).to be_nil
+        expect(@session.evaluate_async_script(<<~JS)).to be_empty
+          indexedDB.databases().then((dbs) => arguments[0](dbs.map((db) => db.name)));
+        JS
+      end
+
+      it "drops cookies set by a request still in flight when the reset starts" do
+        leaked = 10.times.count do
+          @session.visit("/cuprite/simple")
+          @session.execute_script("fetch('/cuprite/slow_cookie')")
+          sleep 0.005 until @driver.browser.network.traffic.any? { |e| e.url.include?("slow_cookie") }
+
+          @session.reset!
+          @session.visit("/cuprite/simple")
+          sleep 0.2
+          @driver.browser.cookies["late"]
+        end
+
+        expect(leaked).to eq(0)
+      end
+
+      it "stops scripts the previous page left running" do
+        @session.visit("/cuprite/simple")
+        @session.execute_script("setInterval(() => { document.cookie = 'late=arrival; path=/' }, 0)")
+
+        @session.reset!
+        @session.visit("/cuprite/simple")
+        sleep 0.1
+
+        expect(@driver.browser.cookies["late"]).to be_nil
+      end
+
+      it "forgets a modal the previous test never asserted on" do
+        @session.visit("/cuprite/simple")
+        @driver.browser.page.accept_confirm
+        @session.execute_script("setTimeout(() => confirm('left behind'), 0)")
+        sleep 0.2
+
+        @session.reset!
+        @session.visit("/cuprite/simple")
+
+        expect { @session.accept_confirm("left behind", wait: 0.5) { nil } }.to raise_error(Capybara::ModalNotFound)
+      end
+
+      it "restores the window size and drops device and media emulation" do
+        @session.visit("/cuprite/simple")
+        dark = @session.evaluate_script("matchMedia('(prefers-color-scheme: dark)').matches")
+        @session.current_window.resize_to(402, 874)
+        @driver.browser.page.command("Emulation.setDeviceMetricsOverride",
+                                     width: 375, height: 600, deviceScaleFactor: 2, mobile: true)
+        @driver.browser.page.command("Emulation.setEmulatedMedia",
+                                     features: [{ name: "prefers-color-scheme", value: dark ? "light" : "dark" }])
+
+        @session.reset!
+        @session.visit("/cuprite/simple")
+
+        expect(@session.evaluate_script("window.innerWidth")).to eq(@driver.browser.options.window_size[0])
+        expect(@session.evaluate_script("window.devicePixelRatio")).to eq(1)
+        expect(@session.evaluate_script("matchMedia('(prefers-color-scheme: dark)').matches")).to eq(dark)
+      end
+
+      it "closes extra windows" do
+        @session.visit("/cuprite/simple")
+        @session.switch_to_window(@session.open_new_window)
+        @session.open_new_window
+        expect(@session.windows.size).to eq(3)
+
+        @session.reset!
+
+        expect(@session.windows.size).to eq(1)
+        @session.visit("/cuprite/simple")
+        expect(@session).to have_content("Foo")
+      end
+
+      it "clears cookies only after the old windows are gone" do
+        open_at_clear = []
+        old_ids = []
+        allow(@driver.browser).to receive(:command).and_wrap_original do |original, method, **params|
+          if method == "Storage.clearCookies"
+            ids = original.call("Target.getTargets")["targetInfos"].map { |info| info["targetId"] }
+            open_at_clear.concat(ids & old_ids)
+          end
+          original.call(method, **params)
+        end
+
+        10.times do
+          @session.visit("/cuprite/simple")
+          @session.execute_script("setInterval(() => { document.cookie = 'late=arrival; path=/' }, 0)")
+          old_ids = @driver.browser.window_handles
+          @session.reset!
+        end
+
+        expect(open_at_clear).to eq([])
+      end
+
+      it "clears storage of an origin whose window closed before the reset" do
+        other_origin = "http://localhost:#{@session.server.port}/cuprite/simple"
+        @session.visit("/cuprite/simple")
+        popup = @session.open_new_window
+        @session.within_window(popup) do
+          @session.visit(other_origin)
+          @session.execute_script("localStorage.setItem('key', 'left behind')")
+        end
+        popup.close
+
+        @session.reset!
+        @session.visit(other_origin)
+
+        expect(@session.evaluate_script("localStorage.getItem('key')")).to be_nil
+      end
+
+      it "drops extra headers and offline mode" do
+        @driver.browser.headers.set("X-Soft-Reset" => "kept")
+        @session.visit("/cuprite/headers")
+        expect(@session).to have_content("SOFT_RESET: kept")
+        @driver.browser.network.offline_mode
+
+        @session.reset!
+        @session.visit("/cuprite/headers")
+
+        expect(@session).to have_content("HOST")
+        expect(@session).not_to have_content("SOFT_RESET")
+      end
+
+      it "falls back to the full reset when the soft one fails" do
+        @session.visit("/set_cookie")
+        context_id = @driver.browser.default_context.id
+        allow(@driver.browser.default_context).to receive(:create_target).and_raise(Ferrum::TimeoutError)
+
+        @session.reset!
+        @session.visit("/get_cookie")
+
+        expect(@driver.browser.default_context.id).not_to eq(context_id)
+        expect(@driver.browser.cookies.all).to be_empty
+      end
+    end
   end
 
   describe "#current_url" do

@@ -53,6 +53,18 @@ class TestApp
     render_string("really slow page")
   end
 
+  get "/cuprite/slow_cookie" do
+    sleep 0.1
+    response.set_cookie("late", value: "arrival", path: "/")
+    render_string("slow cookie")
+  end
+
+  get "/cuprite/cacheable" do
+    cache_control :public, max_age: 60
+    etag "deadbeef"
+    render_string("Cacheable request <a href='/cuprite/cacheable'>click me</a>")
+  end
+
   get "/cuprite/attachment.txt" do
     attachment "attachment.txt"
     "attachment contents"
